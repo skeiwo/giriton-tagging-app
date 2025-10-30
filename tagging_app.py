@@ -23,7 +23,8 @@ tags_and_permissions = {
     "$shift.subscription.early.access:77": None,
   	"$shift.subscription.early.access:78": None,
   	"Leady": "edb751aa-8b63-47eb-ad03-66dba890cb1b",
-  	"zaskok_listing": "52ba0964-c967-49c6-bb3f-8785cacf86a2"
+  	"zaskok_listing": "52ba0964-c967-49c6-bb3f-8785cacf86a2",
+    "quality_inspector": "462a8413-a73d-4f0f-b3f2-354c922e670c"
 }
 
 # Pulling HR data
