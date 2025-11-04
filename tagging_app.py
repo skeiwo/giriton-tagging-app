@@ -23,7 +23,7 @@ tags_and_permissions = {
     "$shift.subscription.early.access:77": None,
   	"$shift.subscription.early.access:78": None,
   	"Leady": "edb751aa-8b63-47eb-ad03-66dba890cb1b",
-  	"zaskok_listing": "52ba0964-c967-49c6-bb3f-8785cacf86a2",
+  	"zaskok": "52ba0964-c967-49c6-bb3f-8785cacf86a2",
     "quality_inspector": "462a8413-a73d-4f0f-b3f2-354c922e670c"
 }
 
@@ -31,7 +31,7 @@ tags_and_permissions = {
 def get_hr_data():
     headers = {"accept": "application/json","giriton-token": GIRITON_TOKEN}
     final_list = []
-    for offset in range(0, 1500, 500):
+    for offset in range(0, 2000, 500):
         url = BASE_URL + f"hr/usersEmployedOn?offset={offset}&limit=500"
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
