@@ -1,10 +1,12 @@
-import streamlit as st
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+from google.oauth2.service_account import Credentials
+
+import gspread
+import json
 import pandas as pd
 import requests
-import json
-from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
+import streamlit as st
 
 
 st.set_page_config(layout="wide")
@@ -12,6 +14,9 @@ GIRITON_TOKEN = st.secrets["giriton_token"]
 CURRENT_TIMESTAMP = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 BASE_URL = "https://rest.giriton.com/system/api/"
 SHEET_ID = st.secrets["sheet_id"]
+HEADERS = {"accept": "application/json", "giriton-token": GIRITON_TOKEN}
+TODAY = datetime.today().date()
+NEXT_3O_DAYS = TODAY + relativedelta(months=1)
 
 tags_and_permissions = {
     "listing":	"6d54afd5-cdb6-4efc-ab30-2ee79954ceaa",
@@ -22,27 +27,49 @@ tags_and_permissions = {
     "vydejna":	"affb2749-4376-43b8-96d0-35134847f618",
     "$shift.subscription.early.access:77": None,
   	"$shift.subscription.early.access:78": None,
+      "$shift.subscription.early.access:54": None,
   	"Leady": "edb751aa-8b63-47eb-ad03-66dba890cb1b",
   	"zaskok": "52ba0964-c967-49c6-bb3f-8785cacf86a2",
     "quality_inspector": "462a8413-a73d-4f0f-b3f2-354c922e670c"
 }
 
 # Pulling HR data
-def get_hr_data():
-    headers = {"accept": "application/json","giriton-token": GIRITON_TOKEN}
-    final_list = []
-    for offset in range(0, 2000, 500):
-        url = BASE_URL + f"hr/usersEmployedOn?offset={offset}&limit=500"
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
+def get_employees() -> pd.DataFrame:
+    list_hr = []
+    offset = 0
+
+    while True:
+        # url = BASE_URL + f"hr/usersEmployedOn?offset={offset}&limit=500"
+        url = BASE_URL + f"hr/usersEmployedBetween?offset={offset}&limit=500&employedFrom={TODAY}&employedTo={NEXT_3O_DAYS}"
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=30)
+            response.raise_for_status()
             hr_data = response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed at offset {offset}: {e}")
+            break
         else:
-            st.error("Error retrieving HR data: " + response.text)
-            continue
-        for person in hr_data["entries"]:
-            hr_dict = {"id": person.get("id"),"person_number": person.get("number"),"first_name": person.get("firstName"),"last_name": person.get("lastName"),"job_position": person.get("jobPosition"),"tags": person.get("tags")}
-            final_list.append(hr_dict)
-    df = pd.DataFrame(final_list)
+            entries = hr_data.get("entries", [])
+            for person in entries:
+                list_hr.append({
+                    "id": person.get("id"),
+                    "giriton_number": person.get("number"),
+                    "first_name": person.get("firstName"),
+                    "last_name": person.get("lastName"),
+                    "entry_timestamp": person.get("entryTimestamp"),
+                    "job_position": person.get("jobPosition"),
+                    "departments": [department.get("name") for department in person.get("departments", [])],
+                    "tags": person.get("tags")
+                })
+
+            if hr_data.get("count", 0) != 500:
+                print(f"Breaking at offset {offset}: count was {hr_data.get('count', 0)}")
+                break
+            offset += 500
+
+    df = pd.DataFrame(list_hr)
+    df = df[df["departments"].apply(lambda dept_list: any(dept in {"Kolbenova", "Hostivař"} for dept in dept_list))]
+    
     return df
 
 # Authentication using secrets
@@ -101,12 +128,15 @@ if not st.session_state["authenticated"]:
 
 
 
+
+
+
 # Load HR data
-df = get_hr_data()
-df = df[(df["job_position"] == "dělník") | (df["person_number"] == "X001")]
+df = get_employees()
+df = df[(df["job_position"] == "dělník") | (df["giriton_number"] == "X001")]
 
 # Fulltext filter
-df_fulltext = df["person_number"] + ": " + df["last_name"] + " " + df["first_name"]
+df_fulltext = df["giriton_number"] + ": " + df["last_name"] + " " + df["first_name"]
 chosen = df_fulltext[df_fulltext == "X001: Test Testovací"]
 remaining = df_fulltext[df_fulltext != "X001: Test Testovací"].sort_values()
 filter_result = pd.concat([chosen, remaining]).reset_index(drop=True)
@@ -118,9 +148,9 @@ if st.session_state["authenticated"]:
     
     # Sidebar: select a person by giriton id
     fulltext_choice = st.sidebar.selectbox("Select person by giriton id or name:", filter_result)
-    person_number = fulltext_choice.split(":")[0]
-    assigned_tags = [tag for tag in df[df["person_number"] == person_number]["tags"].explode().to_list() if tag in tags_and_permissions.keys()]
-    unassigned_tags = [tag for tag in tags_and_permissions.keys() if tag not in df[df["person_number"] == person_number]["tags"].explode().to_list()]
+    giriton_number = fulltext_choice.split(":")[0]
+    assigned_tags = [tag for tag in df[df["giriton_number"] == giriton_number]["tags"].explode().to_list() if tag in tags_and_permissions.keys()]
+    unassigned_tags = [tag for tag in tags_and_permissions.keys() if tag not in df[df["giriton_number"] == giriton_number]["tags"].explode().to_list()]
     col1, col2 = st.columns([2, 1])
     
     with col2:
@@ -137,7 +167,7 @@ if st.session_state["authenticated"]:
         
         if update_button:
             # Details rdy for logging
-            details = f"Updated tags for {person_number}: added tags {add_tags}, removed tags: {remove_tags}"
+            details = f"Updated tags for {giriton_number}: added tags {add_tags}, removed tags: {remove_tags}"
             
             # Attempt to log to gsheets
             try:
@@ -151,7 +181,7 @@ if st.session_state["authenticated"]:
                 headers = {"accept": "application/json", "giriton-token": GIRITON_TOKEN, "Content-Type": "application/json"}
                 try:
                     # Adding/Removing tags
-                    user_id = df[df["person_number"] == person_number]["id"].values[0]
+                    user_id = df[df["giriton_number"] == giriton_number]["id"].values[0]
                     data = {"users": [{"id": user_id, "tagsToAdd": add_tags, "tagsToRemove": remove_tags}]}
                     response = requests.post(url, json=data, headers=headers)
                     response.raise_for_status()
@@ -170,13 +200,13 @@ if st.session_state["authenticated"]:
                         perm_del_data = {"permissionGroupId": permission_to_del, "personIds": user_id}
                         perm_del_response = requests.delete(perm_del_url, headers=perm_del_headers, data=perm_del_data)
                 except Exception as e:
-                    error_message = f"Error updating tags for person number {person_number}: {e}"
+                    error_message = f"Error updating tags for person number {giriton_number}: {e}"
                     st.error(error_message)
                 else:
                     st.success("You successfully changed tags!")
                     st.success(f"Entities updated: {response.json().get('entitiesUpdated', 'N/A')}")
     
     with col1:
-        df = get_hr_data()
-        df_filtered = df[(df["job_position"] == "dělník") | (df["person_number"] == "X001")]
-        st.dataframe(df_filtered[df_filtered["person_number"] == person_number][["person_number", "first_name", "last_name", "tags"]], width=1600)
+        df = get_employees()
+        df_filtered = df[(df["job_position"] == "dělník") | (df["giriton_number"] == "X001")]
+        st.dataframe(df_filtered[df_filtered["giriton_number"] == giriton_number][["giriton_number", "first_name", "last_name", "tags"]], width=1600)
