@@ -27,10 +27,11 @@ tags_and_permissions = {
     "vydejna":	"affb2749-4376-43b8-96d0-35134847f618",
     "$shift.subscription.early.access:77": None,
   	"$shift.subscription.early.access:78": None,
-      "$shift.subscription.early.access:54": None,
+    "$shift.subscription.early.access:54": None,
   	"Leady": "edb751aa-8b63-47eb-ad03-66dba890cb1b",
   	"zaskok": "52ba0964-c967-49c6-bb3f-8785cacf86a2",
-    "quality_inspector": "462a8413-a73d-4f0f-b3f2-354c922e670c"
+    "quality_inspector": "462a8413-a73d-4f0f-b3f2-354c922e670c",
+    "ws_list": "27eea50f-fbf9-48ad-8f94-14436aed676e"
 }
 
 # Pulling HR data
