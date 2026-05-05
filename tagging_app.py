@@ -31,16 +31,21 @@ tags_and_permissions = {
   	"Leady": "edb751aa-8b63-47eb-ad03-66dba890cb1b",
   	"zaskok": "52ba0964-c967-49c6-bb3f-8785cacf86a2",
     "quality_inspector": "462a8413-a73d-4f0f-b3f2-354c922e670c",
-    "ws_list": "27eea50f-fbf9-48ad-8f94-14436aed676e"
+    "ws_list": "27eea50f-fbf9-48ad-8f94-14436aed676e",
+    "ceneni": "c11fed20-3ed5-420f-a0af-31b83c576af7"
 }
 
-# Pulling HR data
-def get_employees() -> pd.DataFrame:
+# Initialize cache invalidation counter in session state
+if "cache_invalidate" not in st.session_state:
+    st.session_state["cache_invalidate"] = 0
+
+# Pulling HR data with caching
+@st.cache_data(ttl=300)
+def get_employees(cache_key: int = 0) -> pd.DataFrame:
     list_hr = []
     offset = 0
 
     while True:
-        # url = BASE_URL + f"hr/usersEmployedOn?offset={offset}&limit=500"
         url = BASE_URL + f"hr/usersEmployedBetween?offset={offset}&limit=500&employedFrom={TODAY}&employedTo={NEXT_3O_DAYS}"
         try:
             response = requests.get(url, headers=HEADERS, timeout=30)
@@ -133,7 +138,7 @@ if not st.session_state["authenticated"]:
 
 
 # Load HR data
-df = get_employees()
+df = get_employees(cache_key=st.session_state["cache_invalidate"])
 df = df[(df["job_position"] == "dělník") | (df["giriton_number"] == "X001")]
 
 # Fulltext filter
@@ -150,64 +155,61 @@ if st.session_state["authenticated"]:
     # Sidebar: select a person by giriton id
     fulltext_choice = st.sidebar.selectbox("Select person by giriton id or name:", filter_result)
     giriton_number = fulltext_choice.split(":")[0]
-    assigned_tags = [tag for tag in df[df["giriton_number"] == giriton_number]["tags"].explode().to_list() if tag in tags_and_permissions.keys()]
-    unassigned_tags = [tag for tag in tags_and_permissions.keys() if tag not in df[df["giriton_number"] == giriton_number]["tags"].explode().to_list()]
+    
+    # Get selected person's current data
+    person_data = df[df["giriton_number"] == giriton_number].iloc[0]
+    assigned_tags = [tag for tag in (person_data["tags"] or []) if tag in tags_and_permissions.keys()]
+    unassigned_tags = [tag for tag in tags_and_permissions.keys() if tag not in (person_data["tags"] or [])]
+    
     col1, col2 = st.columns([2, 1])
     
     with col2:
         # Adding permissions and tags
         add_tags = st.multiselect("Add tags:", sorted(unassigned_tags))
-        permissions_to_add = [tags_and_permissions[add_tag] for add_tag in add_tags]
+        permissions_to_add = [tags_and_permissions[add_tag] for add_tag in add_tags if tags_and_permissions[add_tag] is not None]
 
         # Removing permissions and tags
         remove_tags = st.multiselect("Remove tags:", sorted(assigned_tags))
-        permissions_to_del = [tags_and_permissions[del_tag] for del_tag in remove_tags]
+        permissions_to_del = [tags_and_permissions[del_tag] for del_tag in remove_tags if tags_and_permissions[del_tag] is not None]
 
         # Button to run addition/removal of tags
         update_button = st.button("Update tags")
         
         if update_button:
-            # Details rdy for logging
             details = f"Updated tags for {giriton_number}: added tags {add_tags}, removed tags: {remove_tags}"
             
-            # Attempt to log to gsheets
             try:
                 log_event(st.session_state["username"], "Update Tags", details, SHEET_ID)
             except Exception as e:
-                error_message = f"Logging to Google Sheets failed. Aborting update. Error: {e}, contact Kilian"
-                st.error(error_message)
+                st.error(f"Logging to Google Sheets failed. Aborting update. Error: {e}, contact Kilian")
             else:
-                # Only proceed with updating tags if logging succeeded
-                url = BASE_URL + "hr/usersEmployedOn"
-                headers = {"accept": "application/json", "giriton-token": GIRITON_TOKEN, "Content-Type": "application/json"}
                 try:
-                    # Adding/Removing tags
-                    user_id = df[df["giriton_number"] == giriton_number]["id"].values[0]
+                    user_id = person_data["id"]
+                    
+                    # Update tags and permissions in a single flow
+                    update_url = BASE_URL + "hr/usersEmployedOn"
+                    headers = {"accept": "application/json", "giriton-token": GIRITON_TOKEN, "Content-Type": "application/json"}
                     data = {"users": [{"id": user_id, "tagsToAdd": add_tags, "tagsToRemove": remove_tags}]}
-                    response = requests.post(url, json=data, headers=headers)
+                    response = requests.post(update_url, json=data, headers=headers)
                     response.raise_for_status()
 
-                    # Adding permissions based on tags
-                    for permission_to_add in permissions_to_add:
-                        perm_add_url = BASE_URL + "permissionGroups/members"
-                        perm_add_headers = {"accept": "application/json", "giriton-token": GIRITON_TOKEN, "Content-Type": "application/x-www-form-urlencoded"}
-                        perm_add_data = {"permissionGroupId": permission_to_add, "personIds": user_id}
-                        perm_add_response = requests.post(perm_add_url, headers=perm_add_headers, data=perm_add_data)
-
-                    # Removing permissions based on tags
-                    for permission_to_del in permissions_to_del:
-                        perm_del_url = BASE_URL+"permissionGroups/members"
-                        perm_del_headers = {"accept": "application/json", "giriton-token": GIRITON_TOKEN, "Content-Type": "application/x-www-form-urlencoded"}
-                        perm_del_data = {"permissionGroupId": permission_to_del, "personIds": user_id}
-                        perm_del_response = requests.delete(perm_del_url, headers=perm_del_headers, data=perm_del_data)
-                except Exception as e:
-                    error_message = f"Error updating tags for person number {giriton_number}: {e}"
-                    st.error(error_message)
-                else:
+                    # Batch permission updates
+                    perm_headers = {"accept": "application/json", "giriton-token": GIRITON_TOKEN, "Content-Type": "application/x-www-form-urlencoded"}
+                    perm_url = BASE_URL + "permissionGroups/members"
+                    
+                    for permission_id in permissions_to_add:
+                        requests.post(perm_url, headers=perm_headers, data={"permissionGroupId": permission_id, "personIds": user_id})
+                    
+                    for permission_id in permissions_to_del:
+                        requests.delete(perm_url, headers=perm_headers, data={"permissionGroupId": permission_id, "personIds": user_id})
+                    
                     st.success("You successfully changed tags!")
                     st.success(f"Entities updated: {response.json().get('entitiesUpdated', 'N/A')}")
+                    st.session_state["cache_invalidate"] += 1
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error updating tags for person number {giriton_number}: {e}")
     
     with col1:
-        df = get_employees()
         df_filtered = df[(df["job_position"] == "dělník") | (df["giriton_number"] == "X001")]
         st.dataframe(df_filtered[df_filtered["giriton_number"] == giriton_number][["giriton_number", "first_name", "last_name", "tags"]], width=1600)
